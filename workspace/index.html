@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Notes & Calendar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: rgba(22, 30, 49, 0.75);
+      --card-border: rgba(99, 102, 241, 0.18);
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent: #38bdf8;
+      --danger: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --highlight: #1e293b;
+      --today-bg: rgba(99, 102, 241, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      background: radial-gradient(circle at top right, #1e1b4b, #090d16 50%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem;
+    }
+
+    header {
+      max-width: 1200px;
+      margin: 0 auto 1.5rem auto;
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+    }
+
+    .brand h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .user-badge {
+      font-size: 0.85rem;
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+    }
+
+    .main-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 1.5rem;
+      flex: 1;
+    }
+
+    @media (max-width: 860px) {
+      .main-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 1.5rem;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Календарь */
+    .calendar-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .calendar-nav h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .nav-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--text);
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .nav-btn:hover {
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+
+    .weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      text-align: center;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.5rem;
+    }
+
+    .day-cell {
+      aspect-ratio: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 500;
+      position: relative;
+      transition: all 0.2s;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid transparent;
+    }
+
+    .day-cell:hover:not(.empty) {
+      background: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.4);
+      transform: translateY(-2px);
+    }
+
+    .day-cell.selected {
+      background: var(--primary) !important;
+      color: #fff;
+      font-weight: 700;
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.5);
+    }
+
+    .day-cell.today {
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .day-cell.has-notes::after {
+      content: '';
+      position: absolute;
+      bottom: 6px;
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 6px var(--accent);
+    }
+
+    .day-cell.empty {
+      cursor: default;
+      opacity: 0.1;
+    }
+
+    /* Панель заметок */
+    .notes-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .notes-header h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .selected-date-badge {
+      font-size: 0.85rem;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .new-note-box {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 1rem;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .note-input, .note-textarea {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 0.65rem 0.85rem;
+      color: var(--text);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .note-input:focus, .note-textarea:focus {
+      border-color: var(--primary);
+    }
+
+    .note-textarea {
+      resize: vertical;
+      min-height: 70px;
+    }
+
+    .btn-add {
+      background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0.65rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: all 0.2s;
+    }
+
+    .btn-add:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    .notes-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 400px;
+      padding-right: 4px;
+    }
+
+    .notes-list::-webkit-scrollbar {
+      width: 6px;
+    }
+    .notes-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+    }
+
+    .note-item {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 0.85rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.75rem;
+      transition: all 0.2s;
+    }
+
+    .note-item:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .note-content h4 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+      color: var(--text);
+    }
+
+    .note-content p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+
+    .btn-delete {
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 6px;
+      transition: color 0.2s;
+      font-size: 1rem;
+    }
+
+    .btn-delete:hover {
+      color: var(--danger);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 2.5rem 1rem;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">🗓️</div>
+      <div>
+        <h1>Antigravity Notes</h1>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Личный календарь и органайзер</div>
+      </div>
+    </div>
+    <div class="user-badge">SPIDIKSY ⚡ Live</div>
+  </header>
+
+  <main class="main-container">
+    <!-- Календарь -->
+    <section class="card">
+      <div class="calendar-nav">
+        <button class="nav-btn" id="prevMonth">‹</button>
+        <h2 id="currentMonthYear">Ноябрь 2026</h2>
+        <button class="nav-btn" id="nextMonth">›</button>
+      </div>
+      <div class="weekdays">
+        <div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div>
+      </div>
+      <div class="calendar-grid" id="calendarGrid"></div>
+    </section>
+
+    <!-- Заметки -->
+    <section class="card">
+      <div class="notes-header">
+        <h3>Заметки на день</h3>
+        <span class="selected-date-badge" id="selectedDateText">09.11.2026</span>
+      </div>
+
+      <div class="new-note-box">
+        <input type="text" id="noteTitle" class="note-input" placeholder="Заголовок заметки..." autocomplete="off">
+        <textarea id="noteDesc" class="note-textarea" placeholder="Текст заметки..."></textarea>
+        <button class="btn-add" id="addNoteBtn">
+          <span>+</span> Добавить заметку
+        </button>
+      </div>
+
+      <div class="notes-list" id="notesContainer">
+        <!-- Список заметок генерируется здесь -->
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Хранилище заметок в LocalStorage
+    let notesData = JSON.parse(localStorage.getItem('antigravity_notes') || '{}');
+
+    let currentDate = new Date();
+    let selectedDate = new Date();
+
+    const monthNames = [
+      "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+      "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    ];
+
+    function saveNotes() {
+      localStorage.setItem('antigravity_notes', JSON.stringify(notesData));
+    }
+
+    function formatDateKey(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    function renderCalendar() {
+      const grid = document.getElementById('calendarGrid');
+      grid.innerHTML = '';
+
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth();
+
+      document.getElementById('currentMonthYear').textContent = `${monthNames[month]} ${year}`;
+
+      const firstDayIndex = (new Date(year, month, 1).getDay() + 6) % 7; // Понедельник = 0
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+      // Пустые клетки до начала месяца
+      for (let i = 0; i < firstDayIndex; i++) {
+        const emptyCell = document.createElement('div');
+        emptyCell.className = 'day-cell empty';
+        grid.appendChild(emptyCell);
+      }
+
+      const todayKey = formatDateKey(new Date());
+      const selectedKey = formatDateKey(selectedDate);
+
+      // Дни месяца
+      for (let day = 1; day <= daysInMonth; day++) {
+        const cellDate = new Date(year, month, day);
+        const cellKey = formatDateKey(cellDate);
+
+        const cell = document.createElement('div');
+        cell.className = 'day-cell';
+        cell.textContent = day;
+
+        if (cellKey === todayKey) cell.classList.add('today');
+        if (cellKey === selectedKey) cell.classList.add('selected');
+
+        if (notesData[cellKey] && notesData[cellKey].length > 0) {
+          cell.classList.add('has-notes');
+        }
+
+        cell.addEventListener('click', () => {
+          selectedDate = cellDate;
+          renderCalendar();
+          renderNotes();
+        });
+
+        grid.appendChild(cell);
+      }
+    }
+
+    function renderNotes() {
+      const container = document.getElementById('notesContainer');
+      const key = formatDateKey(selectedDate);
+
+      const d = String(selectedDate.getDate()).padStart(2, '0');
+      const m = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const y = selectedDate.getFullYear();
+      document.getElementById('selectedDateText').textContent = `${d}.${m}.${y}`;
+
+      const currentNotes = notesData[key] || [];
+
+      if (currentNotes.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">📝</div>
+            На этот день пока нет заметок.<br>Добавьте первую выше!
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = currentNotes.map((note, index) => `
+        <div class="note-item">
+          <div class="note-content">
+            <h4>${escapeHtml(note.title)}</h4>
+            ${note.desc ? `<p>${escapeHtml(note.desc)}</p>` : ''}
+          </div>
+          <button class="btn-delete" title="Удалить" onclick="deleteNote('${key}', ${index})">✕</button>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;'
+      }[tag] || tag));
+    }
+
+    function addNote() {
+      const titleInput = document.getElementById('noteTitle');
+      const descInput = document.getElementById('noteDesc');
+
+      const title = titleInput.value.trim();
+      const desc = descInput.value.trim();
+
+      if (!title) {
+        titleInput.focus();
+        return;
+      }
+
+      const key = formatDateKey(selectedDate);
+      if (!notesData[key]) notesData[key] = [];
+
+      notesData[key].push({ title, desc, createdAt: new Date().toISOString() });
+      saveNotes();
+
+      titleInput.value = '';
+      descInput.value = '';
+
+      renderCalendar();
+      renderNotes();
+    }
+
+    window.deleteNote = function(dateKey, index) {
+      if (notesData[dateKey]) {
+        notesData[dateKey].splice(index, 1);
+        if (notesData[dateKey].length === 0) delete notesData[dateKey];
+        saveNotes();
+        renderCalendar();
+        renderNotes();
+      }
+    };
+
+    document.getElementById('addNoteBtn').addEventListener('click', addNote);
+    document.getElementById('noteTitle').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') addNote();
+    });
+
+    document.getElementById('prevMonth').addEventListener('click', () => {
+      currentDate.setMonth(currentDate.getMonth() - 1);
+      renderCalendar();
+    });
+
+    document.getElementById('nextMonth').addEventListener('click', () => {
+      currentDate.setMonth(currentDate.getMonth() + 1);
+      renderCalendar();
+    });
+
+    // Инициализация
+    renderCalendar();
+    renderNotes();
+  </script>
+</body>
+</html>

@@ -8,7 +8,7 @@ from typing import Dict, List, Any
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
@@ -155,8 +155,16 @@ def tool_execute_bash(command: str) -> str:
     except Exception as e:
         return f"[Ошибка выполнения bash: {str(e)}]"
 
+def resolve_workspace_path(path: str) -> Path:
+    p = Path(path.strip())
+    parts = list(p.parts)
+    while parts and parts[0] in ["/", "\\", "app", "workspace"]:
+        parts.pop(0)
+    clean_p = Path(*parts) if parts else Path("index.html")
+    return (WORKSPACE_DIR / clean_p).resolve()
+
 def tool_read_file(path: str) -> str:
-    target = (WORKSPACE_DIR / path).resolve()
+    target = resolve_workspace_path(path)
     try:
         if not target.exists():
             return f"[Ошибка: Файл {path} не существует]"
@@ -165,19 +173,19 @@ def tool_read_file(path: str) -> str:
         return f"[Ошибка чтения файла: {str(e)}]"
 
 def tool_write_file(path: str, content: str) -> str:
-    target = (WORKSPACE_DIR / path).resolve()
+    target = resolve_workspace_path(path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"[Успешно записано в {path} ({len(content)} симв.)]"
+        return f"[Успешно записано в {target.name} ({len(content)} симв.)]"
     except Exception as e:
         return f"[Ошибка записи в файл: {str(e)}]"
 
 def tool_list_directory(path: str = ".") -> str:
-    target = (WORKSPACE_DIR / path).resolve()
+    target = resolve_workspace_path(path)
     try:
         if not target.exists() or not target.is_dir():
-            return f"[Ошибка: Директория {path} не найдена]"
+            target = WORKSPACE_DIR
         items = os.listdir(target)
         res = []
         for it in sorted(items):
@@ -241,12 +249,24 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             }
         }
 
-        async with aiohttp.ClientSession() as http:
-            async with http.post(endpoint, json=payload) as resp:
-                if resp.status != 200:
-                    err_body = await resp.text()
-                    raise Exception(f"Google API {resp.status}: {err_body}")
-                data = await resp.json()
+        data = None
+        for attempt in range(5):
+            async with aiohttp.ClientSession() as http:
+                async with http.post(endpoint, json=payload) as resp:
+                    if resp.status == 429:
+                        wait_sec = 6 + (attempt * 3)
+                        print(f"⚠️ 429 Rate Limit (попытка {attempt+1}/5). Ожидаем {wait_sec} сек...")
+                        await bot.send_chat_action(chat_id, "typing")
+                        await asyncio.sleep(wait_sec)
+                        continue
+                    if resp.status != 200:
+                        err_body = await resp.text()
+                        raise Exception(f"Google API {resp.status}: {err_body}")
+                    data = await resp.json()
+                    break
+
+        if not data:
+            raise Exception("Google API 429: Лимит запросов в минуту исчерпан, подождите 30 секунд.")
 
         candidate = data.get("candidates", [{}])[0]
         content = candidate.get("content", {})
@@ -399,11 +419,28 @@ async def handle_message(message: types.Message):
 # FastAPI веб-сервер для Render
 app = FastAPI()
 
-# Отдаем созданные агентом веб-страницы из workspace
-app.mount("/workspace", StaticFiles(directory=str(WORKSPACE_DIR), html=True), name="workspace")
+@app.get("/workspace/{file_path:path}")
+async def get_workspace_file(file_path: str):
+    clean = file_path.strip().lstrip("/")
+    candidates = [
+        WORKSPACE_DIR / clean,
+        WORKSPACE_DIR / clean.removeprefix("workspace/"),
+        WORKSPACE_DIR / clean.removeprefix("workspace/workspace/"),
+        WORKSPACE_DIR / "workspace" / clean,
+    ]
+    for c in candidates:
+        if c.is_file():
+            return FileResponse(c)
+        if c.is_dir() and (c / "index.html").is_file():
+            return FileResponse(c / "index.html")
+    return PlainTextResponse(f"File '{file_path}' not found in workspace", status_code=404)
 
 @app.get("/")
 def read_root():
+    # Если в workspace есть index.html, отдаем его по корню!
+    index_file = WORKSPACE_DIR / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
     return PlainTextResponse("✅ Antigravity Linux Agent is running 24/7 on Render!")
 
 # Быстрый и надёжный Webhook для Telegram (без конфликтов и сбоев)
