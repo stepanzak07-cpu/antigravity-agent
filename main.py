@@ -15,11 +15,11 @@ import aiohttp
 
 # Конфигурация из переменных окружения
 PORT = int(os.getenv("PORT", 10000))
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "").strip()
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("EMINI_API_KEY") or "").strip()
+ALLOWED_USER_ID = (os.getenv("ALLOWED_USER_ID") or "").strip()
+RENDER_EXTERNAL_URL = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
+MODEL_NAME = (os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite").strip()
 
 # Рабочая директория агента
 WORKSPACE_DIR = (Path(__file__).parent / "workspace").resolve()
@@ -204,6 +204,9 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
     if len(session) > 20:
         session = session[-20:]
         chat_sessions[chat_id] = session
+
+    if not GEMINI_API_KEY:
+        raise Exception("Переменная GEMINI_API_KEY не найдена в Environment сервиса Render! Добавьте её в настройках Environment.")
 
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
