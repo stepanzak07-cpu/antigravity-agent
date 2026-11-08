@@ -331,18 +331,16 @@ def read_root():
     return PlainTextResponse("✅ Antigravity Linux Agent is running 24/7 on Render!")
 
 @app.get("/test-gemini")
-async def test_gemini():
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": "Привет"}]}]
-    }
+async def test_gemini(msg: str = "Привет"):
     try:
-        async with aiohttp.ClientSession() as http:
-            async with http.post(endpoint, json=payload) as resp:
-                text = await resp.text()
-                return PlainTextResponse(f"Status: {resp.status}, Body: {text}")
+        class DummyBot:
+            async def send_chat_action(self, *args, **kwargs): pass
+            async def send_message(self, *args, **kwargs): pass
+        res = await run_agent_loop(999999, msg, DummyBot())
+        return PlainTextResponse(f"Agent Loop Success: {res}")
     except Exception as e:
-        return PlainTextResponse(f"Error: {str(e)}", status_code=500)
+        import traceback
+        return PlainTextResponse(f"Agent Loop Error:\n{traceback.format_exc()}", status_code=500)
 
 # Фоновая задача Keep-Alive (защита от засыпания)
 async def keep_alive_loop():
