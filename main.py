@@ -370,23 +370,6 @@ async def handle_message(message: types.Message):
             print(f"Ошибка в Agent Loop:\n{err_msg}")
             await message.answer(f"⚠️ Ошибка агента:\n{str(e)[:500]}")
 
-# Буфер последних логов приложения
-import collections
-app_log_buffer = collections.deque(maxlen=100)
-
-class LogWriter:
-    def __init__(self, stream):
-        self.stream = stream
-    def write(self, text):
-        self.stream.write(text)
-        if text.strip():
-            app_log_buffer.append(text.strip())
-    def flush(self):
-        self.stream.flush()
-
-sys.stdout = LogWriter(sys.stdout)
-sys.stderr = LogWriter(sys.stderr)
-
 # FastAPI веб-сервер для Render
 app = FastAPI()
 
@@ -396,10 +379,6 @@ app.mount("/workspace", StaticFiles(directory=str(WORKSPACE_DIR), html=True), na
 @app.get("/")
 def read_root():
     return PlainTextResponse("✅ Antigravity Linux Agent is running 24/7 on Render!")
-
-@app.get("/logs")
-def read_logs():
-    return PlainTextResponse("\n".join(app_log_buffer))
 
 # Быстрый и надёжный Webhook для Telegram (без конфликтов и сбоев)
 @app.post("/webhook")
