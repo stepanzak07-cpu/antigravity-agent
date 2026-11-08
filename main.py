@@ -118,8 +118,14 @@ TOOL_DECLARATIONS = [
     }
 ]
 
-# Хранилище диалогов в памяти
+# Хранилище диалогов и блокировок в памяти
 chat_sessions: Dict[int, List[Dict[str, Any]]] = {}
+chat_locks: Dict[int, asyncio.Lock] = {}
+
+def get_chat_lock(chat_id: int) -> asyncio.Lock:
+    if chat_id not in chat_locks:
+        chat_locks[chat_id] = asyncio.Lock()
+    return chat_locks[chat_id]
 
 # Реализация инструментов
 def tool_execute_bash(command: str) -> str:
@@ -268,13 +274,25 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             fn_name = fc.get("name")
             fn_args = fc.get("args", {})
 
+            await bot.send_chat_action(chat_id, "typing")
             if fn_name == "execute_bash":
                 cmd_preview = fn_args.get("command", "")[:120]
-                await bot.send_chat_action(chat_id, "typing")
                 try:
                     await bot.send_message(chat_id, f"⚙️ *Команда:* `{cmd_preview}`", parse_mode="Markdown")
                 except Exception:
                     await bot.send_message(chat_id, f"⚙️ Команда: {cmd_preview}")
+            elif fn_name == "write_file":
+                path_preview = fn_args.get("path", "")
+                try:
+                    await bot.send_message(chat_id, f"📝 *Создаю/пишу файл:* `{path_preview}`...", parse_mode="Markdown")
+                except Exception:
+                    await bot.send_message(chat_id, f"📝 Создаю/пишу файл: {path_preview}...")
+            elif fn_name == "read_file":
+                path_preview = fn_args.get("path", "")
+                try:
+                    await bot.send_message(chat_id, f"📖 *Читаю файл:* `{path_preview}`...", parse_mode="Markdown")
+                except Exception:
+                    await bot.send_message(chat_id, f"📖 Читаю файл: {path_preview}...")
 
             tool_output = run_tool(fn_name, fn_args)
 
@@ -332,19 +350,20 @@ async def handle_message(message: types.Message):
 
     await bot.send_chat_action(chat_id, "typing")
 
-    try:
-        response = await run_agent_loop(chat_id, user_text, bot)
-        for i in range(0, len(response), 4000):
-            chunk = response[i:i+4000]
-            try:
-                await message.answer(chunk, parse_mode="Markdown")
-            except Exception:
-                await message.answer(chunk)
-    except Exception as e:
-        import traceback
-        err_msg = traceback.format_exc()
-        print(f"Ошибка в Agent Loop:\n{err_msg}")
-        await message.answer(f"⚠️ Ошибка агента:\n{str(e)[:500]}")
+    async with get_chat_lock(chat_id):
+        try:
+            response = await run_agent_loop(chat_id, user_text, bot)
+            for i in range(0, len(response), 4000):
+                chunk = response[i:i+4000]
+                try:
+                    await message.answer(chunk, parse_mode="Markdown")
+                except Exception:
+                    await message.answer(chunk)
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            print(f"Ошибка в Agent Loop:\n{err_msg}")
+            await message.answer(f"⚠️ Ошибка агента:\n{str(e)[:500]}")
 
 # FastAPI веб-сервер для Render Health Check и раздачи созданных сайтов
 app = FastAPI()
