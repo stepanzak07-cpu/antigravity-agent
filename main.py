@@ -330,6 +330,20 @@ app = FastAPI()
 def read_root():
     return PlainTextResponse("✅ Antigravity Linux Agent is running 24/7 on Render!")
 
+@app.get("/test-gemini")
+async def test_gemini():
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": "Привет"}]}]
+    }
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(endpoint, json=payload) as resp:
+                text = await resp.text()
+                return PlainTextResponse(f"Status: {resp.status}, Body: {text}")
+    except Exception as e:
+        return PlainTextResponse(f"Error: {str(e)}", status_code=500)
+
 # Фоновая задача Keep-Alive (защита от засыпания)
 async def keep_alive_loop():
     await asyncio.sleep(60) # ждем 1 минуту после старта
