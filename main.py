@@ -9,6 +9,7 @@ from typing import Dict, List, Any
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 import aiohttp
@@ -319,7 +320,10 @@ async def handle_reset(message: types.Message):
 async def handle_message(message: types.Message):
     if not message.text:
         return
+    print(f"📥 ВХОДЯЩЕЕ СООБЩЕНИЕ от {message.from_user.id}: {message.text[:100]}")
+    
     if ALLOWED_USER_ID and str(message.from_user.id) != ALLOWED_USER_ID:
+        print(f"⛔ Отклонён доступ для ID: {message.from_user.id}")
         await message.answer(f"⛔ Доступ запрещен. Ваш ID: {message.from_user.id}")
         return
 
@@ -337,11 +341,16 @@ async def handle_message(message: types.Message):
             except Exception:
                 await message.answer(chunk)
     except Exception as e:
-        print(f"Ошибка в Agent Loop: {e}")
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"Ошибка в Agent Loop:\n{err_msg}")
         await message.answer(f"⚠️ Ошибка агента:\n{str(e)[:500]}")
 
-# FastAPI веб-сервер для Render Health Check
+# FastAPI веб-сервер для Render Health Check и раздачи созданных сайтов
 app = FastAPI()
+
+# Отдаем созданные агентом веб-страницы из workspace
+app.mount("/workspace", StaticFiles(directory=str(WORKSPACE_DIR), html=True), name="workspace")
 
 @app.get("/")
 def read_root():
@@ -378,10 +387,16 @@ async def start_telegram():
     if not TELEGRAM_BOT_TOKEN:
         print("ВНИМАНИЕ: TELEGRAM_BOT_TOKEN не задан! Бот не запущен.")
         return
-    # Сбрасываем вебхуки, чтобы работал быстрый Long Polling
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("Вебхук очищен. Запуск Long Polling...")
-    await dp.start_polling(bot)
+
+    # Супервизор непрерывного Long Polling с автоперезапуском при конфликтах
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            print("🚀 Запуск Long Polling Telegram (ожидание сообщений)...")
+            await dp.start_polling(bot, handle_as_tasks=True)
+        except Exception as e:
+            print(f"⚠️ Ошибка в Telegram Polling ({e}). Перезапуск через 3 сек...")
+            await asyncio.sleep(3)
 
 async def main():
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
