@@ -192,25 +192,25 @@ def run_tool(name: str, args: Dict[str, Any]) -> str:
 
 # Агентный цикл общения с Gemini
 async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
+    if not GEMINI_API_KEY:
+        raise Exception("Переменная GEMINI_API_KEY не найдена в Environment сервиса Render! Добавьте её в настройках Environment.")
+
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
     
-    session = chat_sessions[chat_id]
-    session.append({
+    # Работаем с локальной копией, чтобы при ошибке не повреждать историю сессии
+    history = list(chat_sessions[chat_id])
+    history.append({
         "role": "user",
         "parts": [{"text": user_message}]
     })
 
-    if len(session) > 20:
-        session = session[-20:]
-        chat_sessions[chat_id] = session
-
-    if not GEMINI_API_KEY:
-        raise Exception("Переменная GEMINI_API_KEY не найдена в Environment сервиса Render! Добавьте её в настройках Environment.")
+    if len(history) > 20:
+        history = history[-20:]
 
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
-    max_steps = 8
+    max_steps = 10
     step = 0
 
     while step < max_steps:
@@ -219,10 +219,10 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             "systemInstruction": {
                 "parts": [{"text": SYSTEM_PROMPT}]
             },
-            "contents": session,
+            "contents": history,
             "tools": [{"functionDeclarations": TOOL_DECLARATIONS}],
             "generationConfig": {
-                "temperature": 0.4,
+                "temperature": 0.3,
                 "maxOutputTokens": 2048
             }
         }
@@ -242,44 +242,55 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
 
         if not tool_calls:
             raw_text = "".join([p.get("text", "") for p in parts if "text" in p]).strip()
-            # Убираем шаблонные фразы
             clean_text = raw_text
             for prefix in ["Привет, SPIDIKSY. На связи.", "Привет, SPIDIKSY.", "На связи."]:
                 if clean_text.lower().startswith(prefix.lower()):
                     clean_text = clean_text[len(prefix):].strip()
             final_text = clean_text or raw_text
-            session.append({
+            
+            history.append({
                 "role": "model",
                 "parts": [{"text": final_text}]
             })
+            chat_sessions[chat_id] = history
             return final_text
 
-        session.append({
+        # Сохраняем ход модели с вызовами функций
+        history.append({
             "role": "model",
             "parts": parts
         })
 
+        # Собираем ответы ВСЕХ вызванных функций в ОДИН ход (требование Google API)
+        response_parts = []
         for fc in tool_calls:
             fn_name = fc.get("name")
             fn_args = fc.get("args", {})
 
             if fn_name == "execute_bash":
-                cmd_preview = fn_args.get("command", "")[:100]
+                cmd_preview = fn_args.get("command", "")[:120]
                 await bot.send_chat_action(chat_id, "typing")
-                await bot.send_message(chat_id, f"⚙️ *Команда:* `{cmd_preview}`", parse_mode="Markdown")
+                try:
+                    await bot.send_message(chat_id, f"⚙️ *Команда:* `{cmd_preview}`", parse_mode="Markdown")
+                except Exception:
+                    await bot.send_message(chat_id, f"⚙️ Команда: {cmd_preview}")
 
             tool_output = run_tool(fn_name, fn_args)
 
-            session.append({
-                "role": "user",
-                "parts": [{
-                    "functionResponse": {
-                        "name": fn_name,
-                        "response": {"result": tool_output}
-                    }
-                }]
+            response_parts.append({
+                "functionResponse": {
+                    "name": fn_name,
+                    "response": {"output": tool_output}
+                }
             })
 
+        # Добавляем единый ход с результатами функций
+        history.append({
+            "role": "user",
+            "parts": response_parts
+        })
+
+    chat_sessions[chat_id] = history
     return "⚠️ Превышен лимит шагов агента при решении задачи."
 
 # Telegram Bot
@@ -291,12 +302,18 @@ async def handle_start(message: types.Message):
     if ALLOWED_USER_ID and str(message.from_user.id) != ALLOWED_USER_ID:
         await message.answer(f"⛔ Доступ запрещен. Ваш ID: {message.from_user.id}")
         return
+    chat_sessions[message.chat.id] = []
     await message.answer(
         "⚡ **Автономный Linux-агент Antigravity запущен на Render!**\n\n"
         "У меня есть доступ к терминалу bash, установщику пакетов и файлам.\n"
         "Отправляй любую задачу — напишу код, протестирую в консоли и пришлю отчёт.",
         parse_mode="Markdown"
     )
+
+@dp.message(lambda msg: msg.text in ["/reset", "/clear", "сброс", "очисти диалог"])
+async def handle_reset(message: types.Message):
+    chat_sessions[message.chat.id] = []
+    await message.answer("🧹 История диалога очищена. Можем начинать новую задачу с чистого листа.")
 
 @dp.message()
 async def handle_message(message: types.Message):
