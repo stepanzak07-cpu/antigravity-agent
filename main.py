@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Any
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from aiogram import Bot, Dispatcher, types
@@ -370,7 +370,24 @@ async def handle_message(message: types.Message):
             print(f"Ошибка в Agent Loop:\n{err_msg}")
             await message.answer(f"⚠️ Ошибка агента:\n{str(e)[:500]}")
 
-# FastAPI веб-сервер для Render Health Check и раздачи созданных сайтов
+# Буфер последних логов приложения
+import collections
+app_log_buffer = collections.deque(maxlen=100)
+
+class LogWriter:
+    def __init__(self, stream):
+        self.stream = stream
+    def write(self, text):
+        self.stream.write(text)
+        if text.strip():
+            app_log_buffer.append(text.strip())
+    def flush(self):
+        self.stream.flush()
+
+sys.stdout = LogWriter(sys.stdout)
+sys.stderr = LogWriter(sys.stderr)
+
+# FastAPI веб-сервер для Render
 app = FastAPI()
 
 # Отдаем созданные агентом веб-страницы из workspace
@@ -379,6 +396,29 @@ app.mount("/workspace", StaticFiles(directory=str(WORKSPACE_DIR), html=True), na
 @app.get("/")
 def read_root():
     return PlainTextResponse("✅ Antigravity Linux Agent is running 24/7 on Render!")
+
+@app.get("/logs")
+def read_logs():
+    return PlainTextResponse("\n".join(app_log_buffer))
+
+# Быстрый и надёжный Webhook для Telegram (без конфликтов и сбоев)
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        update = types.Update.model_validate(data, context={"bot": bot})
+        asyncio.create_task(dp.feed_update(bot, update))
+    except Exception as e:
+        print(f"Ошибка в webhook handler: {e}")
+    return PlainTextResponse("OK")
+
+@app.get("/set-webhook")
+async def trigger_set_webhook():
+    if not RENDER_EXTERNAL_URL:
+        return PlainTextResponse("RENDER_EXTERNAL_URL не задан!")
+    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+    res = await bot.set_webhook(webhook_url, drop_pending_updates=False)
+    return PlainTextResponse(f"Webhook set to {webhook_url}: {res}")
 
 @app.get("/test-gemini")
 async def test_gemini(msg: str = "Привет"):
@@ -394,10 +434,8 @@ async def test_gemini(msg: str = "Привет"):
 
 # Фоновая задача Keep-Alive (защита от засыпания)
 async def keep_alive_loop():
-    await asyncio.sleep(60) # ждем 1 минуту после старта
-    url = RENDER_EXTERNAL_URL
-    if not url:
-        return
+    await asyncio.sleep(30)
+    url = RENDER_EXTERNAL_URL or "https://antigravity-agent-mz65.onrender.com"
     while True:
         try:
             async with aiohttp.ClientSession() as s:
@@ -405,22 +443,29 @@ async def keep_alive_loop():
                     print(f"Keep-Alive ping {url} -> {r.status}")
         except Exception as e:
             print(f"Keep-Alive ping error: {e}")
-        await asyncio.sleep(540) # пинг каждые 9 минут
+        await asyncio.sleep(540)
 
 async def start_telegram():
     if not TELEGRAM_BOT_TOKEN:
         print("ВНИМАНИЕ: TELEGRAM_BOT_TOKEN не задан! Бот не запущен.")
         return
 
-    # Супервизор непрерывного Long Polling с автоперезапуском при конфликтах
-    while True:
-        try:
-            await bot.delete_webhook(drop_pending_updates=False)
-            print("🚀 Запуск Long Polling Telegram (ожидание сообщений)...")
-            await dp.start_polling(bot, handle_as_tasks=True)
-        except Exception as e:
-            print(f"⚠️ Ошибка в Telegram Polling ({e}). Перезапуск через 3 сек...")
-            await asyncio.sleep(3)
+    # Привязываем надёжный Webhook через публичный домен Render
+    url = RENDER_EXTERNAL_URL or "https://antigravity-agent-mz65.onrender.com"
+    webhook_url = f"{url}/webhook"
+    try:
+        print(f"🚀 Устанавливаем Webhook на {webhook_url}...")
+        await bot.set_webhook(webhook_url, drop_pending_updates=False)
+        print("✅ Telegram Webhook успешно активирован!")
+    except Exception as e:
+        print(f"⚠️ Ошибка установки вебхука ({e}). Запускаем аварийный Long Polling...")
+        while True:
+            try:
+                await bot.delete_webhook(drop_pending_updates=False)
+                await dp.start_polling(bot, handle_as_tasks=True)
+            except Exception as pe:
+                print(f"Polling error: {pe}")
+                await asyncio.sleep(3)
 
 async def main():
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
