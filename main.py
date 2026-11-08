@@ -202,18 +202,24 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
     if not GEMINI_API_KEY:
         raise Exception("Переменная GEMINI_API_KEY не найдена в Environment сервиса Render! Добавьте её в настройках Environment.")
 
-    if chat_id not in chat_sessions:
-        chat_sessions[chat_id] = []
-    
-    # Работаем с локальной копией, чтобы при ошибке не повреждать историю сессии
-    history = list(chat_sessions[chat_id])
-    history.append({
+    # Очищаем историю сессии от возможных сломанных промежуточных вызовов
+    clean_history = []
+    for turn in chat_sessions.get(chat_id, []):
+        if "role" in turn and "parts" in turn:
+            text_parts = [p for p in turn["parts"] if "text" in p and p.get("text", "").strip()]
+            if text_parts:
+                clean_history.append({"role": turn["role"], "parts": text_parts})
+
+    # Ограничиваем историю 10 последними сообщениями для стабильности
+    if len(clean_history) > 10:
+        clean_history = clean_history[-10:]
+
+    # Локальная рабочая цепочка шагов для текущей задачи
+    current_turns = list(clean_history)
+    current_turns.append({
         "role": "user",
         "parts": [{"text": user_message}]
     })
-
-    if len(history) > 20:
-        history = history[-20:]
 
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
@@ -226,11 +232,11 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             "systemInstruction": {
                 "parts": [{"text": SYSTEM_PROMPT}]
             },
-            "contents": history,
+            "contents": current_turns,
             "tools": [{"functionDeclarations": TOOL_DECLARATIONS}],
             "generationConfig": {
                 "temperature": 0.3,
-                "maxOutputTokens": 2048
+                "maxOutputTokens": 8192
             }
         }
 
@@ -255,15 +261,15 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
                     clean_text = clean_text[len(prefix):].strip()
             final_text = clean_text or raw_text
             
-            history.append({
-                "role": "model",
-                "parts": [{"text": final_text}]
-            })
-            chat_sessions[chat_id] = history
+            # Сохраняем в постоянную память ТОЛЬКО чистый текст вопроса и ответа
+            chat_sessions[chat_id] = clean_history + [
+                {"role": "user", "parts": [{"text": user_message}]},
+                {"role": "model", "parts": [{"text": final_text}]}
+            ]
             return final_text
 
-        # Сохраняем ход модели с вызовами функций
-        history.append({
+        # Сохраняем ход модели с вызовами функций в текущую локальную цепочку
+        current_turns.append({
             "role": "model",
             "parts": parts
         })
@@ -304,12 +310,11 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             })
 
         # Добавляем единый ход с результатами функций
-        history.append({
+        current_turns.append({
             "role": "user",
             "parts": response_parts
         })
 
-    chat_sessions[chat_id] = history
     return "⚠️ Превышен лимит шагов агента при решении задачи."
 
 # Telegram Bot
