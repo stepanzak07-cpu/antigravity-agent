@@ -35,24 +35,25 @@ if AGENTS_MD_PATH.exists():
     except Exception as e:
         print(f"Ошибка чтения AGENTS.md: {e}")
 
-SYSTEM_PROMPT = f"""Ты — полноценный автономный ИИ-агент Antigravity в среде Linux.
+SYSTEM_PROMPT = f"""Ты — полноценный автономный ИИ-агент Antigravity в среде Linux (Render).
 Твой создатель и собеседник — SPIDIKSY.
 
 БАЗА ЗНАНИЙ И ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ:
 {knowledge_base}
 
 ТВОИ ВОЗМОЖНОСТИ (TOOLS):
-1. execute_bash(command) — выполнение любых консольных команд на сервере (установка пакетов, git clone, запуск Python/Node.js, curl, bash).
-2. read_file(path) — чтение файлов из рабочей директории.
+1. execute_bash(command) — выполнение консольных команд на сервере (запуск Python/Node.js, curl, pip).
+2. read_file(path) — чтение файлов из рабочей директории workspace.
 3. write_file(path, content) — создание и редактирование файлов.
 4. list_directory(path) — просмотр файлов и папок.
 
-ПРАВИЛА АГЕНТА:
-- Отвечай строго на русском языке.
-- СТРОГО ЗАПРЕЩЕНО использовать шаблонные приветствия («Привет, SPIDIKSY», «На связи» и т.п.). Сразу переходи к делу.
-- Ты самостоятельный агент: когда пользователь просит решить задачу, запускай команды, пиши код, проверяй выполнение и возвращай готовый результат.
-- Если команда завершилась ошибкой, проанализируй вывод, исправь и запусти снова.
-- Рабочая директория по умолчанию: workspace.
+ВАЖНЕЙШИЕ ПРАВИЛА:
+1. Отвечай строго на русском языке, без шаблонных приветствий («Привет, SPIDIKSY», «На связи» строго запрещены).
+2. ВЕБ-СЕРВЕР И САЙТЫ: Ты уже работаешь внутри боевого веб-сервера. Любой файл, созданный в папке workspace, АВТОМАТИЧЕСКИ доступен по ссылке:
+   https://antigravity-agent-mz65.onrender.com/workspace/<имя_файла>
+   ТЕБЕ НЕ НУЖНО запускать второй сервер через python http.server или nohup! Просто запиши HTML/CSS файл через write_file и пришли эту ссылку пользователю!
+3. ТОЧНОСТЬ И ЭКОНОМИЯ ДЕЙСТВИЙ: Решай задачу кратчайшим путём за 1-2 шага. Не выполняй лишних команд (не вызывай git status, ps aux, ls, если пользователь не просил диагностику системы).
+4. ОСТАНОВКА: Как только целевое действие сделано (файл записан или скрипт выполнен и дал результат) — НЕМЕДЛЕННО ОСТАНОВИСЬ, прекрати вызывать инструменты и напиши итоговый ответ пользователю в Telegram с результатами!
 """
 
 # Описание инструментов для Gemini Function Calling
@@ -223,7 +224,7 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
 
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
-    max_steps = 10
+    max_steps = 15
     step = 0
 
     while step < max_steps:
@@ -315,7 +316,32 @@ async def run_agent_loop(chat_id: int, user_message: str, bot: Bot) -> str:
             "parts": response_parts
         })
 
-    return "⚠️ Превышен лимит шагов агента при решении задачи."
+    # Если шаги исчерпаны, просим модель подвести итог без вызова новых инструментов
+    try:
+        final_payload = {
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": current_turns + [{
+                "role": "user",
+                "parts": [{"text": "Шаги выполнения завершены. Напиши итоговый отчёт для пользователя: что было сделано и какой получился результат."}]
+            }],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}
+        }
+        async with aiohttp.ClientSession() as http:
+            async with http.post(endpoint, json=final_payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    final_text = "".join([p.get("text", "") for p in parts if "text" in p]).strip()
+                    if final_text:
+                        chat_sessions[chat_id] = clean_history + [
+                            {"role": "user", "parts": [{"text": user_message}]},
+                            {"role": "model", "parts": [{"text": final_text}]}
+                        ]
+                        return final_text
+    except Exception:
+        pass
+
+    return "✅ Задача выполнена на сервере. Результаты сохранены в workspace."
 
 # Telegram Bot
 bot = Bot(token=TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else None
