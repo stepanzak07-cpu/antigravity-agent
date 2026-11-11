@@ -80,6 +80,7 @@ class CS2TelegramBot:
         self._cached_summary = None
         self._cached_signals = None
         self._last_market_fetch = None
+        self._processed_updates = set()
 
         # Построение приложения Telegram
         builder = Application.builder().token(token).post_init(self._post_init)
@@ -208,6 +209,12 @@ class CS2TelegramBot:
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Приветственное окно с панелью управления"""
+        if update.update_id in self._processed_updates:
+            return
+        self._processed_updates.add(update.update_id)
+        if len(self._processed_updates) > 1000:
+            self._processed_updates.clear()
+
         mode_text = "🟢 <b>DRY-RUN (Симуляция)</b>" if self.dry_run else "⚡ <b>LIVE (Steam Market)</b>"
         status_text = "🟢 <b>АКТИВЕН</b>" if self.is_monitoring_active else "⏸ <b>НА ПАУЗЕ</b>"
         autopilot_text = "🟢 <b>АВТОНОМНЫЙ АВТОПИЛОТ 24/7</b>" if self.autopilot_enabled else "⚪ <b>ВЫКЛЮЧЕН (Ручной режим)</b>"
@@ -225,10 +232,6 @@ class CS2TelegramBot:
             f"• Корзина: <b>60% Кейсы / 40% Скины</b>\n\n"
             f"<i>Выберите раздел в меню ниже:</i>"
         )
-        if update.message:
-            await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
-        elif update.callback_query:
-            await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=self._get_main_keyboard())
         if update.message:
             await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
         elif update.callback_query:
