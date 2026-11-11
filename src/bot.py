@@ -81,6 +81,8 @@ class CS2TelegramBot:
         self._cached_signals = None
         self._last_market_fetch = None
         self._processed_updates = set()
+        self._last_menu_message_id: Optional[int] = None
+        self.recent_activity: list[str] = []
 
         # Построение приложения Telegram
         builder = Application.builder().token(token).post_init(self._post_init)
@@ -140,17 +142,10 @@ class CS2TelegramBot:
                     if fills:
                         for f in fills:
                             p_status = self.trader_bot.get_portfolio_status()
-                            total_cap = p_status["initial_balance"] + p_status["total_profit_realized"]
-                            roi_pct = (p_status["total_profit_realized"] / p_status["initial_balance"]) * 100
-                            msg = (
-                                f"🎯 <b>АВТОПИЛОТ: СРАБОТАЛ СНАЙПЕР-ВЫКУП!</b>\n\n"
-                                f"• Предмет: <b>{esc(f['item_name'])}</b>\n"
-                                f"• Объем: <b>{f['quantity']} шт.</b> по цене <b>${f['price']:.2f}</b>\n"
-                                f"• Порог безубытка Steam: <b>${f['breakeven_price']:.2f}</b>\n"
-                                f"• Зафиксированный профит: <b>+${f.get('projected_net_profit', 0):.2f}</b>\n\n"
-                                f"💰 <b>Капитал вырос:</b> ${total_cap:.2f} ({roi_pct:+.1f}%)"
-                            )
-                            await self.app.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode="HTML")
+                            log_entry = f"🎯 Выкуп <b>{esc(f['item_name'])}</b> x {f['quantity']} по ${f['price']:.2f} (+${f.get('projected_net_profit', 0):.2f})"
+                            self.recent_activity.append(log_entry)
+                        if len(self.recent_activity) > 10:
+                            self.recent_activity = self.recent_activity[-10:]
 
                     # 2. Если свободных ордеров мало (< 3) и есть доступный кэш - ИИ сам выставляет снайпер-ордера
                     if len(self.trader_bot.active_orders) < 3 and self.trader_bot.available_balance >= 20.0 and signals:
@@ -160,21 +155,10 @@ class CS2TelegramBot:
                                 res = self.trader_bot.place_order_from_signal(s, live=not self.dry_run)
                                 if res.get("success"):
                                     placed.append((s, res))
+                                    self.recent_activity.append(f"🛒 Ордер: <b>{esc(s.item_name)}</b> x {s.quantity} по ${s.target_buy_price:.2f}")
 
-                        if placed:
-                            placed_text = "\n".join(
-                                f"• <b>{esc(s.item_name)}</b> x {s.quantity} по <b>${s.target_buy_price:.2f}</b> (ID: <code>{res['order_id']}</code>)"
-                                for s, res in placed
-                            )
-                            p_status = self.trader_bot.get_portfolio_status()
-                            msg = (
-                                f"🤖 <b>АВТОПИЛОТ: ВЫСТАВЛЕНЫ НОВЫЕ СНАЙПЕР-ОРДЕРА</b>\n\n"
-                                f"ИИ определил фазу <b>{esc(regime.regime)}</b> и рассчитал скидку 18-22%:\n\n"
-                                f"{placed_text}\n\n"
-                                f"💵 Свободный остаток: <b>${p_status['available_cash']:.2f}</b>\n"
-                                f"📊 Зарезервировано: <b>${p_status['reserved_in_orders']:.2f}</b>"
-                            )
-                            await self.app.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode="HTML")
+                        if len(self.recent_activity) > 10:
+                            self.recent_activity = self.recent_activity[-10:]
 
             except Exception as e:
                 log.error(f"Ошибка в цикле автопилота: {e}")
@@ -233,7 +217,14 @@ class CS2TelegramBot:
             f"<i>Выберите раздел в меню ниже:</i>"
         )
         if update.message:
-            await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
+            # Удаляем старое меню, чтобы в чате всегда оставалось строго ОДНО сообщение
+            if self._last_menu_message_id:
+                try:
+                    await context.bot.delete_message(chat_id=self.chat_id, message_id=self._last_menu_message_id)
+                except Exception:
+                    pass
+            sent = await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
+            self._last_menu_message_id = sent.message_id
         elif update.callback_query:
             await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=self._get_main_keyboard())
 
@@ -253,6 +244,10 @@ class CS2TelegramBot:
         else:
             orders_text = "  <i>Активных ордеров нет.</i>\n"
 
+        activity_text = ""
+        if self.recent_activity:
+            activity_text = "\n\n🤖 <b>Авто-лог автопилота:</b>\n" + "\n".join(f"• {a}" for a in self.recent_activity[-4:])
+
         text = (
             f"📊 <b>СОСТОЯНИЕ ПОРТФЕЛЯ</b>\n\n"
             f"• Стартовый капитал: <b>${p_status['initial_balance']:.2f}</b>\n"
@@ -260,6 +255,7 @@ class CS2TelegramBot:
             f"• Зарезервировано: <b>${p_status['reserved_in_orders']:.2f}</b>\n"
             f"• Закрытый профит: <b>+${p_status['total_profit_realized']:.2f}</b>\n\n"
             f"🧾 <b>Текущие Buy-ордера:</b>\n{orders_text}"
+            f"{activity_text}"
         )
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎯 Сгенерировать ордера", callback_data="btn_signals")],
