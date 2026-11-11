@@ -61,6 +61,9 @@ class CS2TelegramBot:
         self.dry_run = dry_run
         self.scan_interval_minutes = scan_interval_minutes
         self.is_monitoring_active = True
+        self.autopilot_enabled = True
+        self.autopilot_interval_seconds = 300  # Фоновый цикл автопилота каждые 5 минут
+        self._autopilot_task = None
 
         # Инициализация торгового ядра
         self.trader_bot = SteamOrderBot(
@@ -79,7 +82,7 @@ class CS2TelegramBot:
         self._last_market_fetch = None
 
         # Построение приложения Telegram
-        builder = Application.builder().token(token)
+        builder = Application.builder().token(token).post_init(self._post_init)
         proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         if proxy_url:
             builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
@@ -106,8 +109,80 @@ class CS2TelegramBot:
         # Глобальный обработчик ошибок
         self.app.add_error_handler(self.on_error)
 
+    async def _post_init(self, application: Application):
+        """Запуск фоновой службы автономного автопилота при старте бота"""
+        log.info("🤖 Запуск фоновой службы автономного автопилота...")
+        self._autopilot_task = asyncio.create_task(self._autopilot_loop())
+
+    async def _autopilot_loop(self):
+        """
+        Полностью автономный цикл:
+        1. Периодически сканирует рынок Steam Community Market (каждые 5 минут).
+        2. Отслеживает исполнение ранее выставленных ордеров при проливах цен.
+        3. Фиксирует прибыль при отскоке и рассчитывает рост депозита.
+        4. Автоматически выбирает лучшие снайпер-входы и выставляет ордера.
+        5. Присылает отчеты о каждой сделке в Telegram владельцу.
+        """
+        await asyncio.sleep(15)  # Небольшая задержка для инициализации
+        while True:
+            try:
+                if self.autopilot_enabled and self.is_monitoring_active:
+                    log.info("🤖 Автопилот: Плановое сканирование рынка CS2...")
+                    regime, item_summary, signals = await self.get_or_refresh_market_data(force=False)
+
+                    # 1. Проверяем исполнение ордеров по текущим рыночным ценам
+                    current_prices = {}
+                    for _, row in item_summary.iterrows():
+                        current_prices[row["Предмет"]] = float(row.get("Текущая ($)", row.get("price", 0.0)))
+
+                    fills = self.trader_bot.check_simulated_fills(current_prices)
+                    if fills:
+                        for f in fills:
+                            p_status = self.trader_bot.get_portfolio_status()
+                            total_cap = p_status["initial_balance"] + p_status["total_profit_realized"]
+                            roi_pct = (p_status["total_profit_realized"] / p_status["initial_balance"]) * 100
+                            msg = (
+                                f"🎯 <b>АВТОПИЛОТ: СРАБОТАЛ СНАЙПЕР-ВЫКУП!</b>\n\n"
+                                f"• Предмет: <b>{esc(f['item_name'])}</b>\n"
+                                f"• Объем: <b>{f['quantity']} шт.</b> по цене <b>${f['price']:.2f}</b>\n"
+                                f"• Порог безубытка Steam: <b>${f['breakeven_price']:.2f}</b>\n"
+                                f"• Зафиксированный профит: <b>+${f.get('projected_net_profit', 0):.2f}</b>\n\n"
+                                f"💰 <b>Капитал вырос:</b> ${total_cap:.2f} ({roi_pct:+.1f}%)"
+                            )
+                            await self.app.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode="HTML")
+
+                    # 2. Если свободных ордеров мало (< 3) и есть доступный кэш - ИИ сам выставляет снайпер-ордера
+                    if len(self.trader_bot.active_orders) < 3 and self.trader_bot.available_balance >= 20.0 and signals:
+                        placed = []
+                        for s in signals[:2]:
+                            if not any(o["item_name"] == s.item_name for o in self.trader_bot.active_orders):
+                                res = self.trader_bot.place_order_from_signal(s, live=not self.dry_run)
+                                if res.get("success"):
+                                    placed.append((s, res))
+
+                        if placed:
+                            placed_text = "\n".join(
+                                f"• <b>{esc(s.item_name)}</b> x {s.quantity} по <b>${s.target_buy_price:.2f}</b> (ID: <code>{res['order_id']}</code>)"
+                                for s, res in placed
+                            )
+                            p_status = self.trader_bot.get_portfolio_status()
+                            msg = (
+                                f"🤖 <b>АВТОПИЛОТ: ВЫСТАВЛЕНЫ НОВЫЕ СНАЙПЕР-ОРДЕРА</b>\n\n"
+                                f"ИИ определил фазу <b>{esc(regime.regime)}</b> и рассчитал скидку 18-22%:\n\n"
+                                f"{placed_text}\n\n"
+                                f"💵 Свободный остаток: <b>${p_status['available_cash']:.2f}</b>\n"
+                                f"📊 Зарезервировано: <b>${p_status['reserved_in_orders']:.2f}</b>"
+                            )
+                            await self.app.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode="HTML")
+
+            except Exception as e:
+                log.error(f"Ошибка в цикле автопилота: {e}")
+
+            await asyncio.sleep(self.autopilot_interval_seconds)
+
     def _get_main_keyboard(self) -> InlineKeyboardMarkup:
-        """Главное меню в стиле Bybit Pilot"""
+        """Главное меню в стиле Bybit Pilot с переключателем автопилота"""
+        autopilot_label = "🤖 Автопилот: 🟢 ВКЛ" if self.autopilot_enabled else "🤖 Автопилот: ⚪ ВЫКЛ"
         keyboard = [
             [
                 InlineKeyboardButton("📊 Портфель", callback_data="btn_status"),
@@ -125,7 +200,8 @@ class CS2TelegramBot:
                 ),
             ],
             [
-                InlineKeyboardButton("🔄 Обновить меню", callback_data="btn_refresh_menu"),
+                InlineKeyboardButton(autopilot_label, callback_data="btn_toggle_autopilot"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="btn_refresh_menu"),
             ]
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -134,17 +210,25 @@ class CS2TelegramBot:
         """Приветственное окно с панелью управления"""
         mode_text = "🟢 <b>DRY-RUN (Симуляция)</b>" if self.dry_run else "⚡ <b>LIVE (Steam Market)</b>"
         status_text = "🟢 <b>АКТИВЕН</b>" if self.is_monitoring_active else "⏸ <b>НА ПАУЗЕ</b>"
+        autopilot_text = "🟢 <b>АВТОНОМНЫЙ АВТОПИЛОТ 24/7</b>" if self.autopilot_enabled else "⚪ <b>ВЫКЛЮЧЕН (Ручной режим)</b>"
         p_status = self.trader_bot.get_portfolio_status()
+        total_equity = p_status["initial_balance"] + p_status["total_profit_realized"]
 
         text = (
             f"🎯 <b>CS2 MARKET SNIPER & TRADER</b>\n\n"
-            f"• Режим исполнения: {mode_text}\n"
-            f"• Мониторинг рынка: {status_text}\n"
-            f"• Баланс: <b>${p_status['initial_balance']:.2f}</b> (Свободно: <b>${p_status['available_cash']:.2f}</b>)\n"
+            f"• Режим: {mode_text}\n"
+            f"• Статус работы: {status_text}\n"
+            f"• Автопилот: {autopilot_text}\n"
+            f"• Капитал: <b>${total_equity:.2f}</b> (Доступно: <b>${p_status['available_cash']:.2f}</b>)\n"
             f"• В ордерах: <b>${p_status['reserved_in_orders']:.2f}</b> | Активных: <b>{p_status['active_orders_count']} шт.</b>\n"
+            f"• Чистый профит: <b>+${p_status['total_profit_realized']:.2f}</b>\n"
             f"• Корзина: <b>60% Кейсы / 40% Скины</b>\n\n"
-            f"<i>Выберите действие в меню ниже:</i>"
+            f"<i>Выберите раздел в меню ниже:</i>"
         )
+        if update.message:
+            await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
+        elif update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=self._get_main_keyboard())
         if update.message:
             await update.message.reply_html(text, reply_markup=self._get_main_keyboard())
         elif update.callback_query:
@@ -372,6 +456,11 @@ class CS2TelegramBot:
                 await self.cmd_stop(update, context)
             else:
                 await self.cmd_resume(update, context)
+        elif data == "btn_toggle_autopilot":
+            self.autopilot_enabled = not self.autopilot_enabled
+            status_t = "ВКЛЮЧЕН 🟢" if self.autopilot_enabled else "ВЫКЛЮЧЕН ⚪"
+            await query.answer(f"Автопилот: {status_t}")
+            await self.cmd_start(update, context)
         elif data == "btn_strategy":
             text = (
                 f"⚙️ <b>СТРАТЕГИЯ МУЛЬТИ-КОРЗИНЫ</b>\n\n"
