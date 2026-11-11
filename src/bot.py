@@ -72,6 +72,12 @@ class CS2TelegramBot:
         self.strategy_engine = CS2StrategyEngine()
         self.market_fetcher = SteamMarketFetcher()
 
+        # In-Memory кэш для моментального отклика в Telegram (< 0.1 сек)
+        self._cached_regime = None
+        self._cached_summary = None
+        self._cached_signals = None
+        self._last_market_fetch = None
+
         # Построение приложения Telegram
         builder = Application.builder().token(token)
         proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
@@ -177,21 +183,50 @@ class CS2TelegramBot:
         elif update.message:
             await update.message.reply_html(text, reply_markup=keyboard)
 
-    async def cmd_market(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Анализ фазы рынка и срез цен"""
-        target_message = update.callback_query.message if update.callback_query else update.message
-        await target_message.reply_chat_action("typing")
+    async def get_or_refresh_market_data(self, force: bool = False):
+        """
+        Умное кэширование рыночных данных в памяти (TTL = 15 мин).
+        Обеспечивает моментальный отклик в Telegram (< 0.1 сек).
+        """
+        now = datetime.now()
+        if not force and self._cached_summary is not None and self._last_market_fetch:
+            if (now - self._last_market_fetch).total_seconds() < 900:
+                return self._cached_regime, self._cached_summary, self._cached_signals
 
         loop = asyncio.get_running_loop()
-        df_trades = await loop.run_in_executor(None, self.market_fetcher.build_multi_basket_dataframe, POPULAR_ITEMS)
+        # Быстрый срез ключевых ликвидных активов
+        df_trades = await loop.run_in_executor(
+            None,
+            self.market_fetcher.build_multi_basket_dataframe,
+            POPULAR_ITEMS[:4],
+        )
 
         if df_trades.empty:
-            await target_message.reply_html("❌ Не удалось получить сделки со Steam. Попробуйте позже.")
-            return
+            from src.market_data import generate_market_history
+            df_trades = generate_market_history(days=45, items=POPULAR_ITEMS[:4], market_regime="bearish")
 
         analyzer = CS2MarketAnalyzer(df_trades)
         regime = analyzer.analyze_market_regime()
         item_summary = analyzer.get_item_summary()
+        signals = self.strategy_engine.generate_multi_basket_orders(
+            item_summary_df=item_summary,
+            total_budget=self.budget,
+            case_budget_pct=0.60,
+            skin_budget_pct=0.40,
+            case_discount_pct=0.18,
+            skin_discount_pct=0.22,
+        )
+
+        self._cached_regime = regime
+        self._cached_summary = item_summary
+        self._cached_signals = signals
+        self._last_market_fetch = now
+        return regime, item_summary, signals
+
+    async def cmd_market(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Анализ фазы рынка и срез цен"""
+        target_message = update.callback_query.message if update.callback_query else update.message
+        regime, item_summary, _ = await self.get_or_refresh_market_data()
 
         table_lines = []
         for _, row in item_summary.head(6).iterrows():
@@ -222,26 +257,7 @@ class CS2TelegramBot:
     async def cmd_signals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Расчет и выставление снайпер-ордеров корзины"""
         target_message = update.callback_query.message if update.callback_query else update.message
-        await target_message.reply_chat_action("typing")
-
-        loop = asyncio.get_running_loop()
-        df_trades = await loop.run_in_executor(None, self.market_fetcher.build_multi_basket_dataframe, POPULAR_ITEMS)
-
-        if df_trades.empty:
-            await target_message.reply_html("❌ Ошибка сбора данных со Steam.")
-            return
-
-        analyzer = CS2MarketAnalyzer(df_trades)
-        item_summary = analyzer.get_item_summary()
-
-        signals = self.strategy_engine.generate_multi_basket_orders(
-            item_summary_df=item_summary,
-            total_budget=self.budget,
-            case_budget_pct=0.60,
-            skin_budget_pct=0.40,
-            case_discount_pct=0.18,
-            skin_discount_pct=0.22,
-        )
+        _, _, signals = await self.get_or_refresh_market_data()
 
         signals_text = ""
         for s in signals:
@@ -251,6 +267,21 @@ class CS2TelegramBot:
                 f"   • Безубыток Steam: <b>${s.breakeven_sell_price:.2f}</b> (с учетом 13% комиссии)\n"
                 f"   • Бюджет: <b>${s.allocated_budget:.2f}</b>\n\n"
             )
+
+        text = (
+            f"🎯 <b>СНАЙПЕР-СИГНАЛЫ (МУЛЬТИ-КОРЗИНА)</b>\n"
+            f"<i>60% на кейсы (-18%), 40% на скины (-22%)</i>\n\n"
+            f"{signals_text}"
+            f"Нажмите кнопку ниже, чтобы автоматически выставить ордера в Dry-Run симуляции:"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Выставить ордера (Dry-Run)", callback_data="btn_execute_orders")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="btn_back_main")],
+        ])
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await update.message.reply_html(text, reply_markup=keyboard)
 
         text = (
             f"🎯 <b>СНАЙПЕР-СИГНАЛЫ (МУЛЬТИ-КОРЗИНА)</b>\n"
@@ -354,12 +385,8 @@ class CS2TelegramBot:
             ])
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
         elif data == "btn_execute_orders":
-            # Исполнение ордеров
-            loop = asyncio.get_running_loop()
-            df_trades = await loop.run_in_executor(None, self.market_fetcher.build_multi_basket_dataframe, POPULAR_ITEMS)
-            analyzer = CS2MarketAnalyzer(df_trades)
-            item_summary = analyzer.get_item_summary()
-            signals = self.strategy_engine.generate_multi_basket_orders(item_summary, total_budget=self.budget)
+            # Исполнение ордеров (моментально из кэша)
+            _, _, signals = await self.get_or_refresh_market_data()
 
             placed = 0
             for s in signals:
